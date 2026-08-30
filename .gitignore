@@ -1,0 +1,18 @@
+# CMake build output
+build/
+cmake-build-*/
+out/
+
+# IDE and operating-system files
+.idea/
+.vscode/
+.vs/
+*.suo
+*.user
+.DS_Store
+
+# Generated audio and local test recordings
+recordings/
+*.wav
+*.aiff
+
