@@ -72,7 +72,7 @@ void MainComponent::paint(juce::Graphics& graphics)
     graphics.fillAll(juce::Colour::fromRGB(24, 25, 28));
     graphics.setColour(juce::Colours::whitesmoke);
     graphics.setFont(juce::FontOptions(24.0f, juce::Font::bold));
-    graphics.drawText("Amp Sim Capstone", 20, 12, getWidth() - 40, 34,
+    graphics.drawText("Amp Sim", 20, 12, getWidth() - 40, 34,
                       juce::Justification::centredLeft);
 }
 
