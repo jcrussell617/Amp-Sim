@@ -2,7 +2,9 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "dsp/AmpProcessor.h"
+
 #include <array>
+#include <atomic>
 
 class MainComponent final : public juce::AudioAppComponent,
                             private juce::Button::Listener
@@ -12,7 +14,8 @@ public:
     ~MainComponent() override;
 
     void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override;
-    void getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill) override;
+    void getNextAudioBlock(
+        const juce::AudioSourceChannelInfo& bufferToFill) override;
     void releaseResources() override;
     void paint(juce::Graphics& graphics) override;
     void resized() override;
@@ -24,16 +27,23 @@ private:
         juce::Label label;
     };
 
-    void configureControl(Control& control, const juce::String& name,
-                          double minimum, double maximum, double initial,
+    void configureControl(Control& control,
+                          const juce::String& name,
+                          double minimum,
+                          double maximum,
+                          double initial,
                           std::atomic<float>& destination);
+
     void buttonClicked(juce::Button* button) override;
 
     AmpProcessor processor;
     std::array<Control, 6> controls;
+
     juce::TextButton audioSettings { "Audio Settings" };
+    juce::ToggleButton bypassButton { "Bypass" };
     juce::AudioDeviceSelectorComponent deviceSelector;
+
+    std::atomic<bool> bypassEnabled { false };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };
-
