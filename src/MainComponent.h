@@ -7,7 +7,8 @@
 #include <atomic>
 
 class MainComponent final : public juce::AudioAppComponent,
-                            private juce::Button::Listener
+                            private juce::Button::Listener,
+                            private juce::Timer
 {
 public:
     MainComponent();
@@ -35,9 +36,26 @@ private:
                           std::atomic<float>& destination);
 
     void buttonClicked(juce::Button* button) override;
+    void timerCallback() override;
+
+    static void updatePeak(std::atomic<float>& destination,
+                           float newPeak) noexcept;
+
+    void drawLevelMeter(juce::Graphics& graphics,
+                        juce::Rectangle<int> bounds,
+                        const juce::String& name,
+                        float levelDb) const;
 
     AmpProcessor processor;
     std::array<Control, 6> controls;
+    std::atomic<float> inputPeak { 0.0f };
+    std::atomic<float> outputPeak { 0.0f };
+
+    float displayedInputDb = -100.0f;
+    float displayedOutputDb = -100.0f;
+
+    juce::Rectangle<int> inputMeterBounds;
+    juce::Rectangle<int> outputMeterBounds;
 
     juce::TextButton audioSettings { "Audio Settings" };
     juce::ToggleButton bypassButton { "Bypass" };

@@ -1,5 +1,7 @@
 #include "MainComponent.h"
 
+#include <algorithm>
+
 MainComponent::MainComponent()
     : deviceSelector(deviceManager, 1, 2, 1, 2,
                      false, false, true, false)
@@ -35,10 +37,12 @@ MainComponent::MainComponent()
 
     setSize(820, 420);
     setAudioChannels(1, 2);
+    startTimerHz(30);
 }
 
 MainComponent::~MainComponent()
 {
+    stopTimer();
     shutdownAudio();
 }
 
@@ -87,6 +91,21 @@ void MainComponent::prepareToPlay(
                       2);
 }
 
+void MainComponent::updatePeak(
+    std::atomic<float>& destination,
+    float newPeak) noexcept
+{
+    auto currentPeak = destination.load(std::memory_order_relaxed);
+
+    while (newPeak > currentPeak
+           && !destination.compare_exchange_weak(
+               currentPeak,
+               newPeak,
+               std::memory_order_relaxed))
+    {
+    }
+}
+
 void MainComponent::getNextAudioBlock(
     const juce::AudioSourceChannelInfo& info)
 {
@@ -94,6 +113,13 @@ void MainComponent::getNextAudioBlock(
 
     if (buffer == nullptr)
         return;
+
+    const auto inputLevel = buffer->getMagnitude(
+        0,
+        info.startSample,
+        info.numSamples);
+
+    updatePeak(inputPeak, inputLevel);
 
     // Copy the mono guitar input to the second output channel.
     if (buffer->getNumChannels() > 1)
@@ -109,11 +135,109 @@ void MainComponent::getNextAudioBlock(
     // When bypass is enabled, leave the copied dry signal unchanged.
     if (!bypassEnabled.load(std::memory_order_relaxed))
         processor.process(*buffer);
+
+    float outputLevel = 0.0f;
+
+    for (int channel = 0;
+         channel < buffer->getNumChannels();
+         ++channel)
+    {
+        outputLevel = std::max(
+            outputLevel,
+            buffer->getMagnitude(
+                channel,
+                info.startSample,
+                info.numSamples));
+    }
+
+    updatePeak(outputPeak, outputLevel);
 }
 
 void MainComponent::releaseResources()
 {
     processor.reset();
+}
+
+void MainComponent::timerCallback()
+{
+    const auto newInputDb = juce::Decibels::gainToDecibels(
+        inputPeak.exchange(0.0f, std::memory_order_relaxed),
+        -100.0f);
+
+    const auto newOutputDb = juce::Decibels::gainToDecibels(
+        outputPeak.exchange(0.0f, std::memory_order_relaxed),
+        -100.0f);
+
+    constexpr auto decayPerFrameDb = 2.0f;
+
+    displayedInputDb = std::max(
+        newInputDb,
+        displayedInputDb - decayPerFrameDb);
+
+    displayedOutputDb = std::max(
+        newOutputDb,
+        displayedOutputDb - decayPerFrameDb);
+
+    displayedInputDb = std::max(displayedInputDb, -100.0f);
+    displayedOutputDb = std::max(displayedOutputDb, -100.0f);
+
+    repaint();
+}
+
+void MainComponent::drawLevelMeter(
+    juce::Graphics& graphics,
+    juce::Rectangle<int> bounds,
+    const juce::String& name,
+    float levelDb) const
+{
+    if (bounds.isEmpty())
+        return;
+
+    graphics.setFont(juce::FontOptions(13.0f));
+
+    auto labelArea = bounds.removeFromLeft(58);
+    graphics.setColour(juce::Colours::whitesmoke);
+    graphics.drawText(name,
+                      labelArea,
+                      juce::Justification::centredLeft);
+
+    auto valueArea = bounds.removeFromRight(82);
+    graphics.drawText(juce::String(levelDb, 1) + " dBFS",
+                      valueArea,
+                      juce::Justification::centredRight);
+
+    auto barArea = bounds.reduced(5, 10);
+    graphics.setColour(juce::Colour::fromRGB(45, 47, 52));
+    graphics.fillRoundedRectangle(barArea.toFloat(), 3.0f);
+
+    const auto normalizedLevel = juce::jlimit(
+        0.0f,
+        1.0f,
+        (levelDb + 60.0f) / 60.0f);
+
+    auto fillArea = barArea;
+    fillArea.setWidth(
+        juce::roundToInt(
+            static_cast<float>(barArea.getWidth())
+            * normalizedLevel));
+
+    const auto meterColour =
+        levelDb >= -3.0f
+            ? juce::Colours::red
+            : levelDb >= -12.0f
+                ? juce::Colours::orange
+                : juce::Colours::limegreen;
+
+    graphics.setColour(meterColour);
+    graphics.fillRoundedRectangle(fillArea.toFloat(), 3.0f);
+
+    graphics.setColour(
+        juce::Colours::whitesmoke.withAlpha(0.5f));
+
+    graphics.drawRoundedRectangle(
+        barArea.toFloat(),
+        3.0f,
+        1.0f);
 }
 
 void MainComponent::paint(juce::Graphics& graphics)
@@ -132,6 +256,18 @@ void MainComponent::paint(juce::Graphics& graphics)
                       getWidth() - 40,
                       34,
                       juce::Justification::centredLeft);
+
+    drawLevelMeter(
+        graphics,
+        inputMeterBounds,
+        "Input",
+        displayedInputDb);
+
+    drawLevelMeter(
+        graphics,
+        outputMeterBounds,
+        "Output",
+        displayedOutputDb);
 }
 
 void MainComponent::resized()
@@ -146,11 +282,23 @@ void MainComponent::resized()
     bypassButton.setBounds(
         header.removeFromRight(100).reduced(0, 6));
 
+    inputMeterBounds = {};
+    outputMeterBounds = {};
+
     if (deviceSelector.isVisible())
     {
         deviceSelector.setBounds(area.reduced(20));
         return;
     }
+
+    auto meterArea = area.removeFromBottom(56);
+    const auto meterWidth = meterArea.getWidth() / 2;
+
+    inputMeterBounds = meterArea
+        .removeFromLeft(meterWidth)
+        .reduced(6);
+
+    outputMeterBounds = meterArea.reduced(6);
 
     const auto controlWidth =
         area.getWidth() / static_cast<int>(controls.size());
