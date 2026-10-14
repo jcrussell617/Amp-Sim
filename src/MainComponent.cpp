@@ -32,11 +32,21 @@ MainComponent::MainComponent()
     addAndMakeVisible(bypassButton);
     bypassButton.addListener(this);
 
+    inputSelector.addItem("Input 1", 1);
+    inputSelector.addItem("Input 2", 2);
+    inputSelector.setSelectedId(1, juce::dontSendNotification);
+    inputSelector.onChange = [this]
+    {
+        selectedInputChannel.store(inputSelector.getSelectedId() - 1,
+                                   std::memory_order_relaxed);
+    };
+    addAndMakeVisible(inputSelector);
+
     deviceSelector.setVisible(false);
     addChildComponent(deviceSelector);
 
     setSize(820, 420);
-    setAudioChannels(1, 2);
+    setAudioChannels(2, 2);
     startTimerHz(30);
 }
 
@@ -111,17 +121,33 @@ void MainComponent::getNextAudioBlock(
 {
     auto* buffer = info.buffer;
 
-    if (buffer == nullptr)
+    if (buffer == nullptr || info.numSamples <= 0 || buffer->getNumChannels() == 0)
         return;
 
+    const auto sourceChannel =
+        selectedInputChannel.load(std::memory_order_relaxed);
+
+    if (sourceChannel >= buffer->getNumChannels())
+    {
+        info.clearActiveBufferRegion();
+        updatePeak(inputPeak, 0.0f);
+        updatePeak(outputPeak, 0.0f);
+        return;
+    }
+
     const auto inputLevel = buffer->getMagnitude(
-        0,
+        sourceChannel,
         info.startSample,
         info.numSamples);
 
     updatePeak(inputPeak, inputLevel);
 
-    // Copy the mono guitar input to the second output channel.
+    // Route the selected input to output channel 0.
+    if (sourceChannel != 0)
+        buffer->copyFrom(0, info.startSample, *buffer,
+                         sourceChannel, info.startSample, info.numSamples);
+
+    // Copy that same signal to output channel 1.
     if (buffer->getNumChannels() > 1)
     {
         buffer->copyFrom(1,
@@ -132,9 +158,16 @@ void MainComponent::getNextAudioBlock(
                          info.numSamples);
     }
 
+    // This view references only the samples assigned to this callback.
+    juce::AudioBuffer<float> activeBuffer(
+        buffer->getArrayOfWritePointers(),
+        buffer->getNumChannels(),
+        info.startSample,
+        info.numSamples);
+
     // When bypass is enabled, leave the copied dry signal unchanged.
     if (!bypassEnabled.load(std::memory_order_relaxed))
-        processor.process(*buffer);
+        processor.process(activeBuffer);
 
     float outputLevel = 0.0f;
 
@@ -282,6 +315,9 @@ void MainComponent::resized()
     bypassButton.setBounds(
         header.removeFromRight(100).reduced(0, 6));
 
+    inputSelector.setBounds(
+        header.removeFromRight(130).reduced(4, 6));
+
     inputMeterBounds = {};
     outputMeterBounds = {};
 
@@ -332,6 +368,7 @@ void MainComponent::buttonClicked(juce::Button* button)
 
     const auto showSettings = !deviceSelector.isVisible();
     deviceSelector.setVisible(showSettings);
+    inputSelector.setVisible(!showSettings);
 
     for (auto& control : controls)
     {

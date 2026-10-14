@@ -59,9 +59,11 @@ private:
 
     juce::TextButton audioSettings { "Audio Settings" };
     juce::ToggleButton bypassButton { "Bypass" };
+    juce::ComboBox inputSelector;
     juce::AudioDeviceSelectorComponent deviceSelector;
 
     std::atomic<bool> bypassEnabled { false };
+    std::atomic<int> selectedInputChannel { 0 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };
