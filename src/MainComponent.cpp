@@ -1,6 +1,7 @@
 #include "MainComponent.h"
 
 #include <algorithm>
+#include <cmath>
 
 MainComponent::MainComponent()
     : deviceSelector(deviceManager, 1, 2, 1, 2,
@@ -45,7 +46,21 @@ MainComponent::MainComponent()
     deviceSelector.setVisible(false);
     addChildComponent(deviceSelector);
 
-    setSize(820, 420);
+    latencyLogFile = juce::File::getSpecialLocation(
+        juce::File::userApplicationDataDirectory)
+        .getChildFile("AmpSimCapstone").getChildFile("latency.csv");
+    latencyLabel.setFont(juce::FontOptions(13.0f));
+    latencyLabel.setColour(juce::Label::textColourId, juce::Colours::whitesmoke);
+    latencyLabel.setJustificationType(juce::Justification::centredLeft);
+    latencyLabel.setTooltip("Driver-reported latency; not a measured round trip. Log: "
+                            + latencyLogFile.getFullPathName());
+    addAndMakeVisible(latencyLabel);
+    logLatencyButton.onClick = [this] { updateLatencyInfo(true); };
+    logLatencyButton.setTooltip("Append the current device settings and reported latency to "
+                                + latencyLogFile.getFullPathName());
+    addAndMakeVisible(logLatencyButton);
+
+    setSize(820, 510);
     setAudioChannels(2, 2);
     startTimerHz(30);
 }
@@ -193,6 +208,13 @@ void MainComponent::releaseResources()
 
 void MainComponent::timerCallback()
 {
+    // Query and write on the message thread, never in the audio callback.
+    if (--latencyPollCountdown <= 0)
+    {
+        latencyPollCountdown = 15; // About twice per second.
+        updateLatencyInfo();
+    }
+
     const auto newInputDb = juce::Decibels::gainToDecibels(
         inputPeak.exchange(0.0f, std::memory_order_relaxed),
         -100.0f);
@@ -307,6 +329,9 @@ void MainComponent::resized()
 {
     const auto margin = 20;
     auto area = getLocalBounds().reduced(margin);
+    auto footer = area.removeFromBottom(86);
+    logLatencyButton.setBounds(footer.removeFromRight(116).reduced(2, 24));
+    latencyLabel.setBounds(footer.reduced(0, 3));
     auto header = area.removeFromTop(48);
 
     audioSettings.setBounds(
@@ -380,4 +405,84 @@ void MainComponent::buttonClicked(juce::Button* button)
         showSettings ? "Back to Amp" : "Audio Settings");
 
     resized();
+}
+
+
+void MainComponent::updateLatencyInfo(bool forceLog)
+{
+    auto* device = deviceManager.getCurrentAudioDevice();
+    if (device == nullptr || !device->isOpen() || !device->isPlaying())
+    {
+        latencyLabel.setText("Audio device inactive - latency unavailable",
+                             juce::dontSendNotification);
+        logLatencyButton.setEnabled(false);
+        lastLatencyConfiguration.clear();
+        latencyLogStatus.clear();
+        return;
+    }
+
+    const double rate = device->getCurrentSampleRate();
+    const int bufferSize = device->getCurrentBufferSizeSamples();
+    const int inputSamples = device->getInputLatencyInSamples();
+    const int outputSamples = device->getOutputLatencyInSamples();
+    if (rate <= 0.0 || !std::isfinite(rate))
+    {
+        latencyLabel.setText("Audio device starting - latency unavailable",
+                             juce::dontSendNotification);
+        logLatencyButton.setEnabled(false);
+        lastLatencyConfiguration.clear();
+        return;
+    }
+    logLatencyButton.setEnabled(true);
+
+    const auto milliseconds = [rate](int samples)
+    {
+        return samples >= 0 ? juce::String(1000.0 * samples / rate, 2)
+                            : juce::String();
+    };
+    const auto inputMs = milliseconds(inputSamples);
+    const auto outputMs = milliseconds(outputSamples);
+    const auto totalMs = inputSamples >= 0 && outputSamples >= 0
+        ? juce::String(1000.0 * (static_cast<double>(inputSamples)
+                               + outputSamples) / rate, 2)
+        : juce::String();
+    const auto displayMs = [](const juce::String& value)
+    {
+        return value.isEmpty() ? juce::String("unavailable") : value + " ms";
+    };
+    // Quote every text field so commas, quotes and line breaks remain valid CSV.
+    const auto csvText = [](juce::String value)
+    {
+        return juce::String("\"") + value.replace("\"", "\"\"") + "\"";
+    };
+    const auto configuration = csvText(device->getName()) + ","
+        + csvText(device->getTypeName()) + "," + juce::String(rate, 3) + ","
+        + juce::String(bufferSize) + "," + juce::String(inputSamples) + ","
+        + juce::String(outputSamples);
+
+    if (forceLog || configuration != lastLatencyConfiguration)
+    {
+        const auto reason = forceLog ? "manual" : "device_configuration";
+        juce::String row;
+        if (!latencyLogFile.existsAsFile() || latencyLogFile.getSize() == 0)
+            row = "timestamp_local,device,driver,sample_rate_hz,buffer_samples,"
+                  "input_latency_samples,output_latency_samples,input_latency_ms,"
+                  "output_latency_ms,combined_reported_latency_ms,reason,measurement_type\n";
+        row += csvText(juce::Time::getCurrentTime().toISO8601(true)) + ","
+            + configuration + "," + inputMs + "," + outputMs + "," + totalMs
+            + "," + reason + ",driver_reported\n";
+        const bool saved = latencyLogFile.getParentDirectory().createDirectory().wasOk()
+                        && latencyLogFile.appendText(row);
+        latencyLogStatus = saved ? "CSV saved " + juce::Time::getCurrentTime().formatted("%H:%M:%S")
+                                : "CSV save failed - check folder permissions";
+        // Avoid retrying disk writes every poll after a failure. The button retries.
+        lastLatencyConfiguration = configuration;
+    }
+
+    latencyLabel.setText(device->getName() + " | " + device->getTypeName() + " | "
+        + juce::String(rate, 0) + " Hz | " + juce::String(bufferSize) + " samples\n"
+        + "Reported input: " + displayMs(inputMs) + " | output: " + displayMs(outputMs)
+        + " | combined: " + displayMs(totalMs) + "\n"
+        + "Driver-reported; not measured round trip. " + latencyLogStatus,
+        juce::dontSendNotification);
 }

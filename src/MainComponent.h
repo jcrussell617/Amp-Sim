@@ -37,6 +37,14 @@ private:
 
     void buttonClicked(juce::Button* button) override;
     void timerCallback() override;
+    void updateLatencyInfo(bool forceLog = false);
+
+    juce::Label latencyLabel;
+    juce::TextButton logLatencyButton { "Log Latency" };
+    juce::File latencyLogFile;
+    juce::String lastLatencyConfiguration;
+    juce::String latencyLogStatus;
+    int latencyPollCountdown = 0;
 
     static void updatePeak(std::atomic<float>& destination,
                            float newPeak) noexcept;
