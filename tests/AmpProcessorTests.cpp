@@ -121,7 +121,8 @@ bool channelsMatch(
 // set before prepare(), so gain smoothing does not contaminate measurements.
 juce::AudioBuffer<float> renderSignal(double sampleRate, float inputDb,
                                     float gainDb, float outputDb,
-                                    bool chord = false)
+                                    bool chord = false,
+                                    double frequency = 200.0)
 {
     const auto count = static_cast<int>(sampleRate);
     juce::AudioBuffer<float> result(2, count);
@@ -145,7 +146,7 @@ juce::AudioBuffer<float> renderSignal(double sampleRate, float inputDb,
         for (int i = 0; i < length; ++i)
         {
             const double t = static_cast<double>(offset + i) / sampleRate;
-            double value = std::sin(2.0 * pi * 200.0 * t);
+            double value = std::sin(2.0 * pi * frequency * t);
             if (chord)
             {
                 // Synthetic guitar-range triad; not a guitar-tone model.
@@ -214,6 +215,7 @@ bool runDistortionTests()
         std::cout << "\nDistortion measurements at " << sampleRate << " Hz\n";
         // Peak levels of the generated input, not RMS levels.
         double weakThd = 0.0, strongThd = 0.0;
+        int inputCase = 0;
         for (const float inputDb : { -60.0f, -40.0f, -20.0f })
         {
             auto audio = renderSignal(sampleRate, inputDb, 36.0f, -12.0f);
@@ -224,10 +226,11 @@ bool runDistortionTests()
                   "Input-level sweep produced invalid output");
             check(thd >= 0.0 && std::isfinite(thd),
                   "Input-level sweep has no measurable fundamental");
-            if (inputDb == -60.0f) weakThd = thd;
-            if (inputDb == -20.0f) strongThd = thd;
+            if (inputCase == 0) weakThd = thd;
+            if (inputCase == 2) strongThd = thd;
+            ++inputCase;
         }
-        // Baseline expectations for the current single tanh stage.
+        // Broad expectations for the voiced single tanh stage.
         // Deliberate changes to drive architecture may require updating these.
         check(weakThd >= 0.0 && weakThd < 0.01,
               "Very weak input should remain nearly clean at current max gain");
@@ -273,11 +276,58 @@ bool runDistortionTests()
         check(channelsMatch(chord, 0.000001f),
               "Synthetic chord stereo channels differ");
         // This bound applies only to neutral EQ and -12 dB output.
+        // Allow filter overshoot beyond the raw clipper bound.
         // Boosted EQ/output settings are allowed to exceed digital full scale.
-        check(getMaximumMagnitude(chord) <= 0.252f,
+        check(getMaximumMagnitude(chord) <= 0.32f,
               "Neutral-EQ chord exceeded the expected output bound");
     }
     return passed;
+}
+
+bool runVoicingTests()
+{
+    for (const double rate : { 44100.0, 48000.0 })
+    {
+        // Very small input keeps the clipping stage effectively linear.
+        // These checks exercise the entire chain, not coefficient formulas.
+        auto low = renderSignal(rate, -60.0f, 0.0f, 0.0f, false, 50.0);
+        auto middle = renderSignal(rate, -60.0f, 0.0f, 0.0f, false, 1000.0);
+        auto high = renderSignal(rate, -60.0f, 0.0f, 0.0f, false, 12000.0);
+        const auto midRms = getAverageRms(middle);
+        if (!bufferContainsOnlyFiniteSamples(low)
+            || !bufferContainsOnlyFiniteSamples(middle)
+            || !bufferContainsOnlyFiniteSamples(high)
+            || !(midRms > 0.0005f)
+            || !(getAverageRms(low) < midRms * 0.65f)
+            || !(getAverageRms(high) < midRms * 0.30f))
+        {
+            std::cerr << "FAILED: Voicing did not attenuate bass and high frequencies\n";
+            return false;
+        }
+
+        // Independent per-channel filter state: left audio cannot leak right.
+        AmpProcessor processor;
+        processor.prepare(rate, blockSize, 2);
+        juce::AudioBuffer<float> buffer(2, blockSize);
+        fillSineWave(buffer, rate, 110.0, 0.25f);
+        buffer.clear(1, 0, blockSize);
+        processor.process(buffer);
+        if (buffer.getMagnitude(1, 0, blockSize) > 0.000001f)
+        {
+            std::cerr << "FAILED: Filter state leaked across channels\n";
+            return false;
+        }
+        processor.reset();
+        buffer.clear();
+        processor.process(buffer);
+        if (!bufferContainsOnlyFiniteSamples(buffer)
+            || getMaximumMagnitude(buffer) > 0.000001f)
+        {
+            std::cerr << "FAILED: Reset left stale filter state\n";
+            return false;
+        }
+    }
+    return true;
 }
 
 int fail(int code, const char* message)
@@ -445,6 +495,9 @@ int main()
                     "A sample rate produced invalid output");
         }
     }
+
+    if (!runVoicingTests())
+        return 11;
 
     if (!runDistortionTests())
         return 10;

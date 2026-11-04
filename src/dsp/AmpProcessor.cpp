@@ -52,6 +52,15 @@ void AmpProcessor::Biquad::setHighShelf(double sr, double frequency, double q, f
                   (a + 1.0) - (a - 1.0) * cosine - rootAAlpha2);
 }
 
+void AmpProcessor::Biquad::setLowPass(double sr, double frequency, double q) noexcept
+{
+    const auto omega = juce::MathConstants<double>::twoPi * frequency / sr;
+    const auto cosine = std::cos(omega);
+    const auto alpha = std::sin(omega) / (2.0 * q);
+    setNormalized((1.0 - cosine) / 2.0, 1.0 - cosine, (1.0 - cosine) / 2.0,
+                  1.0 + alpha, -2.0 * cosine, 1.0 - alpha);
+}
+
 float AmpProcessor::Biquad::process(float input) noexcept
 {
     const auto output = b0 * input + z1;
@@ -69,6 +78,15 @@ void AmpProcessor::prepare(double newSampleRate, int, int numberOfChannels)
     outputGain.reset(sampleRate, 0.02);
     inputGain.setCurrentAndTargetValue(juce::Decibels::decibelsToGain(values.gainDb.load()));
     outputGain.setCurrentAndTargetValue(juce::Decibels::decibelsToGain(values.outputDb.load()));
+    // Set fixed voicing coefficients once per device preparation.
+    for (int channel = 0; channel < activeChannels; ++channel)
+    {
+        const auto index = static_cast<size_t>(channel);
+        preBass[index].setLowShelf(sampleRate, preBassFrequencyHz, 0.707, preBassCutDb);
+        outputLowPass[index].setLowPass(sampleRate,
+                                       std::min(outputLowPassHz, sampleRate * 0.45),
+                                       0.707);
+    }
     updateFilters();
     reset();
 }
@@ -77,6 +95,8 @@ void AmpProcessor::reset()
 {
     for (int channel = 0; channel < maxChannels; ++channel)
     {
+        preBass[static_cast<size_t>(channel)].reset();
+        outputLowPass[static_cast<size_t>(channel)].reset();
         bass[static_cast<size_t>(channel)].reset();
         mid[static_cast<size_t>(channel)].reset();
         treble[static_cast<size_t>(channel)].reset();
@@ -114,12 +134,16 @@ void AmpProcessor::process(juce::AudioBuffer<float>& buffer) noexcept
 
         for (int channel = 0; channel < channels; ++channel)
         {
-            auto value = buffer.getSample(channel, sample) * in;
-            value = softClip(value);
+            // Reduce low-frequency drive before the nonlinear stage.
+            auto value = preBass[static_cast<size_t>(channel)].process(
+                buffer.getSample(channel, sample));
+            value = softClip(value * in);
             value = bass[static_cast<size_t>(channel)].process(value);
             value = mid[static_cast<size_t>(channel)].process(value);
             value = treble[static_cast<size_t>(channel)].process(value);
             value = presence[static_cast<size_t>(channel)].process(value);
+            // Gentle speaker-like roll-off; not a full cabinet simulation.
+            value = outputLowPass[static_cast<size_t>(channel)].process(value);
             buffer.setSample(channel, sample, value * out);
         }
     }

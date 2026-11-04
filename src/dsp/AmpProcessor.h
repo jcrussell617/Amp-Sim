@@ -30,6 +30,7 @@ private:
         void setPeak(double sampleRate, double frequency, double q, float gainDb) noexcept;
         void setLowShelf(double sampleRate, double frequency, double q, float gainDb) noexcept;
         void setHighShelf(double sampleRate, double frequency, double q, float gainDb) noexcept;
+        void setLowPass(double sampleRate, double frequency, double q) noexcept;
         float process(float input) noexcept;
         void reset() noexcept { z1 = z2 = 0.0f; }
 
@@ -49,6 +50,12 @@ private:
     int activeChannels = 1;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> inputGain;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> outputGain;
+    // Fixed first-pass voicing. Tune these with recorded guitar comparisons.
+    static constexpr double preBassFrequencyHz = 180.0;
+    static constexpr float preBassCutDb = -6.0f;
+    static constexpr double outputLowPassHz = 6000.0;
+    std::array<Biquad, maxChannels> preBass;
+    std::array<Biquad, maxChannels> outputLowPass;
     std::array<Biquad, maxChannels> bass;
     std::array<Biquad, maxChannels> mid;
     std::array<Biquad, maxChannels> treble;
