@@ -67,3 +67,23 @@ if (AMP_SIM_BUILD_TESTS)
     add_test(NAME AmpSimTests COMMAND AmpSimTests)
 endif()
 
+
+option(AMP_SIM_BUILD_OFFLINE_TOOL "Build offline WAV renderer" ON)
+if (AMP_SIM_BUILD_OFFLINE_TOOL)
+    add_executable(AmpSimOffline
+        tools/OfflineRender.cpp
+        src/dsp/AmpProcessor.cpp
+        src/dsp/AmpProcessor.h
+    )
+    target_include_directories(AmpSimOffline PRIVATE src)
+    target_compile_definitions(AmpSimOffline PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+    )
+    target_link_libraries(AmpSimOffline PRIVATE
+        juce::juce_audio_formats
+        juce::juce_dsp
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+    )
+endif()
